@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="pt-PT">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gerador de Rotas de Entrega</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    
+    <!-- Babel para JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- PapaParse para ler CSV -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+    
+    <!-- jsPDF e jsPDF-AutoTable para gerar PDF -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+
+    <!-- SheetJS para gerar Excel/Planilha -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+    <!-- JSZip e FileSaver para exportar tudo em ZIP -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #f3f4f6; }
+        .drag-active { border-color: #3b82f6; background-color: #eff6ff; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useRef } = React;
+
+        // Componente de Ícones SVG
+        const Icon = ({ name, className }) => {
+            const icons = {
+                'map': <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21"></polygon><line x1="9" y1="3" x2="9" y2="18"></line><line x1="15" y1="6" x2="15" y2="21"></line></svg>,
+                'file-spreadsheet': <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"></path><polyline points="14 2 14 8 20 8"></polyline><path d="M8 13h2"></path><path d="M8 17h2"></path><path d="M14 13h2"></path><path d="M14 17h2"></path></svg>,
+                'alert-circle': <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>,
+                'truck': <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><rect x="1" y="3" width="15" height="13"></rect><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"></polygon><circle cx="5.5" cy="18.5" r="2.5"></circle><circle cx="18.5" cy="18.5" r="2.5"></circle></svg>,
+                'file-down': <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"></path><polyline points="14 2 14 8 20 8"></polyline><path d="M12 18v-6"></path><polyline points="9 15 12 18 15 15"></polyline></svg>,
+                'table': <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line><line x1="3" y1="15" x2="21" y2="15"></line><line x1="10" y1="9" x2="10" y2="21"></line><line x1="14" y1="9" x2="14" y2="21"></line></svg>,
+                'download': <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>,
+                'loader-2': <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M21 12a9 9 0 1 1-6.219-8.56"></path></svg>,
+                'archive': <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><polyline points="21 8 21 21 3 21 3 8"></polyline><rect x="1" y="3" width="22" height="5"></rect><line x1="10" y1="12" x2="14" y2="12"></line></svg>,
+                'folder': <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>,
+                'file-text': <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+            };
+            return icons[name] || null;
+        };
+
+        function App() {
+            const [file, setFile] = useState(null);
+            const [csvData, setCsvData] = useState([]);
+            const [routes, setRoutes] = useState({});
+            const [isDragging, setIsDragging] = useState(false);
+            const [processing, setProcessing] = useState(false);
+            const [error, setError] = useState('');
+            const fileInputRef = useRef(null);
+
+            // Nomes de colunas possíveis
+            const possibleRouteCols = ['rota', 'route', 'roteiro', 'codigo da rota'];
+            
+            // Colunas para extrair o sufixo separadamente
+            const possibleDestFacCols = ['destination_facility', 'facilityid'];
+            const possibleOpTypeCols = ['tipo_de_operacao', 'tipo de operacao'];
+
+            // O findColumn agora ignora corretamente espaços e sublinhados quer no CSV quer nas opções de pesquisa
+            const findColumn = (headers, possibleNames) => {
+                const normalizedHeaders = headers.map(h => h.toLowerCase().replace(/_/g, ' ').trim());
+                const normalizedPossibles = possibleNames.map(p => p.toLowerCase().replace(/_/g, ' ').trim());
+                
+                const index = normalizedHeaders.findIndex(h => normalizedPossibles.some(p => h.includes(p)));
+                return index !== -1 ? headers[index] : null;
+            };
+
+            // Função para processar os dados do CSV
+            const processData = (data) => {
+                if (data.length === 0) {
+                    setError('Os dados estão vazios. Verifique o seu ficheiro.');
+                    setProcessing(false);
+                    return;
+                }
+
+                const headers = Object.keys(data[0]);
+                const routeCol = findColumn(headers, possibleRouteCols);
+                const destFacCol = findColumn(headers, possibleDestFacCols);
+                const opTypeCol = findColumn(headers, possibleOpTypeCols);
+
+                if (!routeCol) {
+                    setError('Não foi possível identificar a coluna de "Rota". Certifique-se de ter uma coluna com nome "Rota", "Roteiro" etc no seu CSV.');
+                    setProcessing(false);
+                    return;
+                }
+
+                const groupedRoutes = {};
+                data.forEach(row => {
+                    let baseRouteName = row[routeCol]?.trim() || 'Sem_Rota';
+                    
+                    // Prioridade 1: destination_facility (ex: EAL1, EAL3)
+                    let destFac = destFacCol ? row[destFacCol]?.trim().toUpperCase() : '';
+                    
+                    // Prioridade 2: Tipo_de_operacao (ex: SVC, XPT) - usado apenas se destination_facility estiver vazio
+                    let opType = opTypeCol ? row[opTypeCol]?.trim().toUpperCase() : '';
+
+                    let facility = destFac || opType || 'OUTROS';
+
+                    // Adiciona a facility ao nome da rota (apenas se ainda não estiver lá para evitar duplicação)
+                    let finalRouteName = baseRouteName;
+                    if (facility && !finalRouteName.toUpperCase().endsWith(`_${facility}`)) {
+                        finalRouteName = `${baseRouteName}_${facility}`;
+                    }
+
+                    // Guardamos também a "facility" num objeto para sabermos criar a pasta exata no ZIP depois
+                    if (!groupedRoutes[finalRouteName]) {
+                        groupedRoutes[finalRouteName] = {
+                            facility: facility,
+                            data: []
+                        };
+                    }
+                    groupedRoutes[finalRouteName].data.push(row);
+                });
+
+                setCsvData(data);
+                setRoutes(groupedRoutes);
+                setProcessing(false);
+            };
+
+            // Importação por ficheiro local
+            const handleFileUpload = (uploadedFile) => {
+                if (!uploadedFile) return;
+                
+                if (uploadedFile.type !== 'text/csv' && !uploadedFile.name.endsWith('.csv') && !uploadedFile.type.includes('excel')) {
+                    setError('Por favor, envie apenas ficheiros CSV.');
+                    return;
+                }
+
+                setFile(uploadedFile);
+                setError('');
+                setProcessing(true);
+
+                Papa.parse(uploadedFile, {
+                    header: true,
+                    skipEmptyLines: true,
+                    complete: function(results) {
+                        processData(results.data);
+                    },
+                    error: function(err) {
+                        setError('Erro ao ler o CSV: ' + err.message);
+                        setProcessing(false);
+                    }
+                });
+            };
+
+            const addRouteToDoc = (doc, routeName, routeData, startNewPage = false) => {
+                if (startNewPage) doc.addPage();
+                
+                const pageWidth = doc.internal.pageSize.width;
+                const hasBulky = routeData.some(row => (row['tipo_pacote'] || '').toLowerCase().includes('bulky'));
+                
+                doc.setFontSize(16);
+                doc.setFont("helvetica", "bold");
+                doc.text("mercado", 14, 18);
+                doc.text("envios", 14, 24);
+                
+                doc.setFontSize(10);
+                doc.setFont("helvetica", "normal");
+                
+                doc.text(`Motorista: _____________________________________`, 60, 18);
+                doc.text(`Placa: __________________`, 60, 26);
+                
+                if (hasBulky) {
+                    doc.setFillColor(0, 0, 0); 
+                    doc.rect(190, 11, 35, 10, 'F');
+                    doc.setTextColor(255, 255, 255); 
+                    doc.setFontSize(14);
+                    doc.setFont("helvetica", "bold");
+                    doc.text("BULKY", 207.5, 18, { align: "center" });
+                    doc.setTextColor(0, 0, 0); 
+                }
+                
+                doc.setFontSize(11);
+                doc.setFont("helvetica", "bold");
+                doc.text(`Rota: ${routeName}`, 235, 18);
+                // Total de pacotes retirado daqui a pedido
+
+                const tableColumns = [
+                    "Rota", "Ordem", "Shipment", "Cidade", "Bairro", 
+                    "Rua", "Numero", "CEP", "Referências"
+                ];
+                
+                const tableRows = routeData.map((row, index) => {
+                    let seqRaw = row['Ordem'] || (index + 1).toString();
+                    let seq = /^\d+$/.test(seqRaw) ? `${seqRaw}A` : seqRaw;
+                    
+                    return [
+                        row['Rota'] || routeName,
+                        seq, 
+                        row['Shipment'] || '-', 
+                        row['Cidade'] || '-', 
+                        row['Bairro'] || '-', 
+                        row['Rua'] || '-', 
+                        row['Numero'] || '-', 
+                        row['CEP'] || '-', 
+                        row['Referências'] || row['Referencia'] || row['Referencias'] || '-'
+                    ];
+                });
+
+                doc.autoTable({
+                    head: [tableColumns],
+                    body: tableRows,
+                    startY: 32,
+                    theme: 'grid',
+                    styles: { fontSize: 7, cellPadding: 2, valign: 'middle', lineColor: [150, 150, 150], lineWidth: 0.1, overflow: 'linebreak' },
+                    headStyles: { fillColor: [240, 240, 240], textColor: [0, 0, 0], fontStyle: 'bold', halign: 'center' },
+                    columnStyles: {
+                        0: { cellWidth: 15 }, 
+                        1: { cellWidth: 12, halign: 'center', fontStyle: 'bold' }, 
+                        2: { cellWidth: 23 }, 
+                        3: { cellWidth: 25 }, 
+                        4: { cellWidth: 30 }, 
+                        5: { cellWidth: 40 }, 
+                        6: { cellWidth: 15 }, 
+                        7: { cellWidth: 16 }, 
+                        8: { cellWidth: 'auto' } 
+                    },
+                    didDrawPage: function (data) {
+                        doc.setFontSize(8);
+                        doc.setFont("helvetica", "normal");
+                        const strRodape = `Roteiro SERVICE CENTER | Transportadora: ______________________ | Rota ${routeName} | Data: ___/___/20___`;
+                        doc.text(strRodape, 14, doc.internal.pageSize.height - 10);
+                        doc.text(`Folha ${doc.internal.getNumberOfPages()}`, pageWidth - 25, doc.internal.pageSize.height - 10);
+                    }
+                });
+            };
+
+            const generatePDF = (routeName, routeData, returnBlob = false) => {
+                const { jsPDF } = window.jspdf;
+                const doc = new jsPDF('l', 'mm', 'a4');
+                addRouteToDoc(doc, routeName, routeData, false);
+
+                if (returnBlob) return doc.output('blob');
+                else doc.save(`Rota_${routeName}.pdf`);
+            };
+
+            const downloadMergedPDF = () => {
+                setProcessing(true);
+                try {
+                    const { jsPDF } = window.jspdf;
+                    const doc = new jsPDF('l', 'mm', 'a4');
+                    
+                    let isFirst = true;
+                    Object.entries(routes).forEach(([routeName, routeInfo]) => {
+                        addRouteToDoc(doc, routeName, routeInfo.data, !isFirst);
+                        isFirst = false;
+                    });
+                    
+                    doc.save("Todas_As_Rotas.pdf");
+                } catch (err) {
+                    setError("Erro ao gerar PDF unificado: " + err.message);
+                } finally {
+                    setProcessing(false);
+                }
+            };
+
+            // Cria as pastas organizadas dentro do ZIP
+            const downloadAllAsZip = async () => {
+                setProcessing(true);
+                try {
+                    const zip = new JSZip();
+                    
+                    Object.entries(routes).forEach(([routeName, routeInfo]) => {
+                        const pdfBlob = generatePDF(routeName, routeInfo.data, true);
+                        
+                        // Determina o nome da pasta com base no destination_facility ou operation type (EAL1, EAL2, SVC, etc)
+                        const folderName = routeInfo.facility || 'Outros';
+                        
+                        // Guarda o ficheiro PDF na sua respetiva pasta no ZIP
+                        zip.folder(folderName).file(`Rota_${routeName}.pdf`, pdfBlob);
+                    });
+                    
+                    const zipContent = await zip.generateAsync({ type: "blob" });
+                    window.saveAs(zipContent, "Rotas_PDFs_Organizados.zip");
+                } catch (err) {
+                    setError("Erro ao gerar o ficheiro ZIP: " + err.message);
+                } finally {
+                    setProcessing(false);
+                }
+            };
+
+            const exportToExcel = () => {
+                let allData = [];
+                Object.entries(routes).forEach(([routeName, routeInfo]) => {
+                    routeInfo.data.forEach((row, index) => {
+                        let seqRaw = row['Ordem'] || (index + 1).toString();
+                        let seq = /^\d+$/.test(seqRaw) ? `${seqRaw}A` : seqRaw;
+
+                        allData.push({
+                            "Pasta_Destino": routeInfo.facility,
+                            "Rota_PDF": routeName,
+                            "Rota": row['Rota'] || routeName,
+                            "Ordem": seq,
+                            "Shipment": row['Shipment'] || '-',
+                            "Cidade": row['Cidade'] || '-',
+                            "Bairro": row['Bairro'] || '-',
+                            "Rua": row['Rua'] || '-',
+                            "Numero": row['Numero'] || '-',
+                            "CEP": row['CEP'] || '-',
+                            "Referências": row['Referências'] || row['Referencia'] || row['Referencias'] || '-'
+                        });
+                    });
+                });
+
+                const worksheet = XLSX.utils.json_to_sheet(allData);
+                const workbook = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(workbook, worksheet, "Todas as Rotas");
+                XLSX.writeFile(workbook, "Planeamento_Rotas.xlsx");
+            };
+
+            return (
+                <div className="min-h-screen p-6 flex flex-col items-center">
+                    <div className="w-full max-w-5xl bg-white rounded-xl shadow-lg p-8">
+                        
+                        <div className="flex items-center space-x-3 mb-8 border-b pb-4">
+                            <Icon name="map" className="w-8 h-8 text-blue-600" />
+                            <h1 className="text-2xl font-bold text-gray-800">Criador de Rotas de Entrega</h1>
+                        </div>
+
+                        {/* Área Inicial - Upload Manual */}
+                        {!Object.keys(routes).length && (
+                            <div 
+                                className={`border-2 border-dashed rounded-xl p-16 text-center transition-colors cursor-pointer flex flex-col justify-center items-center
+                                    ${isDragging ? 'drag-active' : 'border-gray-300 hover:bg-gray-50'}`}
+                                onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+                                onDragLeave={() => setIsDragging(false)}
+                                onDrop={(e) => {
+                                    e.preventDefault();
+                                    setIsDragging(false);
+                                    handleFileUpload(e.dataTransfer.files[0]);
+                                }}
+                                onClick={() => !processing && fileInputRef.current.click()}
+                            >
+                                <input 
+                                    type="file" 
+                                    accept=".csv" 
+                                    className="hidden" 
+                                    ref={fileInputRef}
+                                    onChange={(e) => handleFileUpload(e.target.files[0])}
+                                />
+                                {processing ? (
+                                    <div className="flex flex-col items-center">
+                                        <Icon name="loader-2" className="w-12 h-12 text-blue-600 animate-spin mb-4" />
+                                        <h3 className="text-lg font-medium text-gray-700">A processar dados...</h3>
+                                    </div>
+                                ) : (
+                                    <>
+                                        <Icon name="file-spreadsheet" className="w-16 h-16 text-gray-400 mx-auto mb-4" />
+                                        <h3 className="text-xl font-medium text-gray-700 mb-2">Arraste o seu CSV aqui</h3>
+                                        <p className="text-md text-gray-500 mb-6">ou clique para procurar no computador</p>
+
+                                        <div className="text-xs text-left text-gray-500 bg-gray-100 p-4 rounded-md inline-block">
+                                            <p className="font-semibold mb-1">Colunas que serão impressas no PDF e na Planilha:</p>
+                                            <p>Rota, Ordem, Shipment, Cidade, Bairro, Rua, Numero, CEP, Referências</p>
+                                        </div>
+                                    </>
+                                )}
+                            </div>
+                        )}
+
+                        {/* Mensagem de Erro */}
+                        {error && (
+                            <div className="mt-6 p-4 bg-red-50 text-red-600 rounded-lg flex items-start border border-red-100">
+                                <Icon name="alert-circle" className="w-5 h-5 mr-3 flex-shrink-0 mt-0.5" />
+                                <span className="text-sm">{error}</span>
+                            </div>
+                        )}
+
+                        {/* Lista de Rotas Processadas */}
+                        {Object.keys(routes).length > 0 && (
+                            <div className="mt-8">
+                                <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
+                                    <div>
+                                        <h2 className="text-xl font-semibold text-gray-800">Rotas Identificadas</h2>
+                                        <p className="text-sm text-gray-500">
+                                            {Object.keys(routes).length} PDFs encontrados • {csvData.length} pacotes no total
+                                        </p>
+                                    </div>
+                                    <div className="flex flex-wrap gap-2">
+                                        <button 
+                                            onClick={() => { setRoutes({}); setFile(null); setCsvData([]); }}
+                                            className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition"
+                                            disabled={processing}
+                                        >
+                                            Novo Ficheiro
+                                        </button>
+                                        <button 
+                                            onClick={exportToExcel}
+                                            className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition flex items-center inline-flex"
+                                            disabled={processing}
+                                        >
+                                            <Icon name="table" className="w-4 h-4 mr-2" />
+                                            Exportar Planilha
+                                        </button>
+                                        <button 
+                                            onClick={downloadMergedPDF}
+                                            className={`px-4 py-2 text-white rounded-lg transition flex items-center inline-flex ${processing ? 'bg-indigo-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700'}`}
+                                            disabled={processing}
+                                        >
+                                            {processing ? (
+                                                <><Icon name="loader-2" className="w-4 h-4 mr-2 animate-spin" /> A gerar...</>
+                                            ) : (
+                                                <><Icon name="file-text" className="w-4 h-4 mr-2" /> PDF Único</>
+                                            )}
+                                        </button>
+                                        <button 
+                                            onClick={downloadAllAsZip}
+                                            className={`px-4 py-2 text-white rounded-lg transition flex items-center inline-flex ${processing ? 'bg-blue-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'}`}
+                                            disabled={processing}
+                                        >
+                                            {processing ? (
+                                                <><Icon name="loader-2" className="w-4 h-4 mr-2 animate-spin" /> A compactar ZIP...</>
+                                            ) : (
+                                                <><Icon name="archive" className="w-4 h-4 mr-2" /> Baixar ZIP</>
+                                            )}
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                                    {Object.entries(routes).map(([routeName, routeInfo]) => (
+                                        <div key={routeName} className="border border-gray-200 rounded-lg p-4 flex justify-between items-center hover:shadow-sm transition bg-gray-50">
+                                            <div className="flex items-start space-x-3 overflow-hidden">
+                                                <div className="bg-white p-2 rounded-lg border border-gray-200 shadow-sm mt-1">
+                                                    <Icon name="folder" className="w-5 h-5 text-yellow-500" />
+                                                </div>
+                                                <div className="min-w-0">
+                                                    <h3 className="font-semibold text-gray-800 text-md truncate" title={routeName}>{routeName}</h3>
+                                                    <p className="text-xs text-gray-500 mb-1">Pasta ZIP: <span className="font-medium text-gray-700">{routeInfo.facility}</span></p>
+                                                    <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">
+                                                        {routeInfo.data.length} pacotes
+                                                    </span>
+                                                </div>
+                                            </div>
+                                            <button 
+                                                onClick={() => generatePDF(routeName, routeInfo.data)}
+                                                className="p-2 ml-2 text-blue-600 hover:bg-blue-100 rounded-md transition flex-shrink-0 bg-white border border-transparent hover:border-blue-200"
+                                                title="Transferir apenas este PDF"
+                                                disabled={processing}
+                                            >
+                                                <Icon name="file-down" className="w-5 h-5" />
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
