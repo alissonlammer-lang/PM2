@@ -67,23 +67,22 @@
             const [error, setError] = useState('');
             const fileInputRef = useRef(null);
 
-            // Nomes de colunas possíveis
-            const possibleRouteCols = ['rota', 'route', 'roteiro', 'codigo da rota'];
+            // Nomes de colunas possíveis agrupados por prioridade
+            const possibleRouteCols = ['rota', 'route_name', 'route', 'roteiro', 'codigo da rota'];
             
-            // Colunas para extrair o sufixo separadamente
-            const possibleDestFacCols = ['destination_facility', 'facilityid'];
+            // Adicionado 'codigo' para apanhar os ECE1/SAL1/BRNAL do modelo mais recente
+            const possibleDestFacCols = ['codigo', 'destination_facility', 'destination facility'];
             const possibleOpTypeCols = ['tipo_de_operacao', 'tipo de operacao'];
+            const possibleFacIdCols = ['facility_id', 'facilityid', 'facility id'];
 
-            // O findColumn agora ignora corretamente espaços e sublinhados quer no CSV quer nas opções de pesquisa
             const findColumn = (headers, possibleNames) => {
                 const normalizedHeaders = headers.map(h => h.toLowerCase().replace(/_/g, ' ').trim());
                 const normalizedPossibles = possibleNames.map(p => p.toLowerCase().replace(/_/g, ' ').trim());
                 
-                const index = normalizedHeaders.findIndex(h => normalizedPossibles.some(p => h.includes(p)));
+                const index = normalizedHeaders.findIndex(h => normalizedPossibles.some(p => h === p || h.includes(p)));
                 return index !== -1 ? headers[index] : null;
             };
 
-            // Função para processar os dados do CSV
             const processData = (data) => {
                 if (data.length === 0) {
                     setError('Os dados estão vazios. Verifique o seu ficheiro.');
@@ -93,34 +92,36 @@
 
                 const headers = Object.keys(data[0]);
                 const routeCol = findColumn(headers, possibleRouteCols);
+                
                 const destFacCol = findColumn(headers, possibleDestFacCols);
                 const opTypeCol = findColumn(headers, possibleOpTypeCols);
+                const facIdCol = findColumn(headers, possibleFacIdCols);
 
                 if (!routeCol) {
-                    setError('Não foi possível identificar a coluna de "Rota". Certifique-se de ter uma coluna com nome "Rota", "Roteiro" etc no seu CSV.');
+                    setError('Não foi possível identificar a coluna de "Rota". Certifique-se de ter uma coluna com nome "Rota", "route_name" etc no seu CSV.');
                     setProcessing(false);
                     return;
                 }
 
                 const groupedRoutes = {};
+                
+                const cleanStr = (val) => val && val !== '-' && val !== 'NULL' ? val : '';
+
                 data.forEach(row => {
                     let baseRouteName = row[routeCol]?.trim() || 'Sem_Rota';
                     
-                    // Prioridade 1: destination_facility (ex: EAL1, EAL3)
-                    let destFac = destFacCol ? row[destFacCol]?.trim().toUpperCase() : '';
-                    
-                    // Prioridade 2: Tipo_de_operacao (ex: SVC, XPT) - usado apenas se destination_facility estiver vazio
-                    let opType = opTypeCol ? row[opTypeCol]?.trim().toUpperCase() : '';
+                    let destFac = destFacCol ? cleanStr(row[destFacCol]?.trim().toUpperCase()) : '';
+                    let opType = opTypeCol ? cleanStr(row[opTypeCol]?.trim().toUpperCase()) : '';
+                    let facId = facIdCol ? cleanStr(row[facIdCol]?.trim().toUpperCase()) : '';
 
-                    let facility = destFac || opType || 'OUTROS';
+                    // Mantemos a facilidade como BRNAL ou BRDAL para manter as rotas separadas
+                    let facility = destFac || opType || facId || 'OUTROS';
 
-                    // Adiciona a facility ao nome da rota (apenas se ainda não estiver lá para evitar duplicação)
                     let finalRouteName = baseRouteName;
                     if (facility && !finalRouteName.toUpperCase().endsWith(`_${facility}`)) {
                         finalRouteName = `${baseRouteName}_${facility}`;
                     }
 
-                    // Guardamos também a "facility" num objeto para sabermos criar a pasta exata no ZIP depois
                     if (!groupedRoutes[finalRouteName]) {
                         groupedRoutes[finalRouteName] = {
                             facility: facility,
@@ -135,7 +136,6 @@
                 setProcessing(false);
             };
 
-            // Importação por ficheiro local
             const handleFileUpload = (uploadedFile) => {
                 if (!uploadedFile) return;
                 
@@ -191,38 +191,77 @@
                 doc.setFontSize(11);
                 doc.setFont("helvetica", "bold");
                 doc.text(`Rota: ${routeName}`, 235, 18);
-                // Total de pacotes retirado daqui a pedido
 
-                const tableColumns = [
-                    "Rota", "Ordem", "Shipment", "Cidade", "Bairro", 
-                    "Rua", "Numero", "CEP", "Referências"
-                ];
-                
-                const tableRows = routeData.map((row, index) => {
-                    let seqRaw = row['Ordem'] || (index + 1).toString();
-                    let seq = /^\d+$/.test(seqRaw) ? `${seqRaw}A` : seqRaw;
-                    
-                    return [
-                        row['Rota'] || routeName,
-                        seq, 
-                        row['Shipment'] || '-', 
-                        row['Cidade'] || '-', 
-                        row['Bairro'] || '-', 
-                        row['Rua'] || '-', 
-                        row['Numero'] || '-', 
-                        row['CEP'] || '-', 
-                        row['Referências'] || row['Referencia'] || row['Referencias'] || '-'
+                // 3 LAYOUTS: DETEÇÃO AUTOMÁTICA
+                const headerKeys = Object.keys(routeData[0]).map(k => k.toLowerCase().trim());
+                const isModeloAntigo = headerKeys.includes('rua');
+                // O modelo novo que mandou agora usa 'unit_id' e 'stop_sequence'
+                const isModeloIngles = headerKeys.includes('unit_id') || headerKeys.includes('stop_sequence');
+
+                let tableColumns = [];
+                let tableRows = [];
+                let colStyles = {};
+
+                if (isModeloIngles) {
+                    // LAYOUT 3: Inglês / Novo Formato (9 Colunas)
+                    tableColumns = [
+                        "Rota", "Ordem", "Shipment", "Cidade", "Bairro", 
+                        "CEP", "SPR", "Código", "Operação"
                     ];
-                });
+                    
+                    tableRows = routeData.map((row, index) => {
+                        let seqRaw = row['stop_sequence'] || row['Ordem'] || row['ordem'] || (index + 1).toString();
+                        let seq = /^\d+$/.test(seqRaw) ? `${seqRaw}A` : seqRaw;
+                        
+                        return [
+                            row['route_name'] || row['Rota'] || row['rota'] || routeName,
+                            seq, 
+                            row['unit_id'] || row['Shipment'] || row['shipment'] || '-', 
+                            row['city'] || row['Cidade'] || row['cidade'] || '-', 
+                            row['bairro'] || row['Bairro'] || '-', 
+                            row['zip_code'] || row['CEP'] || row['cep'] || '-', 
+                            row['spr'] || row['SPR'] || '-', 
+                            row['Codigo'] || row['codigo'] || '-',
+                            row['Tipo_de_operacao'] || row['tipo_de_operacao'] || row['tipo de operacao'] || '-'
+                        ];
+                    });
 
-                doc.autoTable({
-                    head: [tableColumns],
-                    body: tableRows,
-                    startY: 32,
-                    theme: 'grid',
-                    styles: { fontSize: 7, cellPadding: 2, valign: 'middle', lineColor: [150, 150, 150], lineWidth: 0.1, overflow: 'linebreak' },
-                    headStyles: { fillColor: [240, 240, 240], textColor: [0, 0, 0], fontStyle: 'bold', halign: 'center' },
-                    columnStyles: {
+                    colStyles = {
+                        0: { cellWidth: 20 }, 
+                        1: { cellWidth: 15, halign: 'center', fontStyle: 'bold' }, 
+                        2: { cellWidth: 30 }, 
+                        3: { cellWidth: 40 }, 
+                        4: { cellWidth: 45 }, 
+                        5: { cellWidth: 20 }, 
+                        6: { cellWidth: 15, halign: 'center' }, 
+                        7: { cellWidth: 20, halign: 'center' }, 
+                        8: { cellWidth: 'auto' } 
+                    };
+                } else if (isModeloAntigo) {
+                    // LAYOUT 1: Antigo (Com Rua, Número, Referências)
+                    tableColumns = [
+                        "Rota", "Ordem", "Shipment", "Cidade", "Bairro", 
+                        "Rua", "Numero", "CEP", "Referências"
+                    ];
+                    
+                    tableRows = routeData.map((row, index) => {
+                        let seqRaw = row['Ordem'] || row['ordem'] || (index + 1).toString();
+                        let seq = /^\d+$/.test(seqRaw) ? `${seqRaw}A` : seqRaw;
+                        
+                        return [
+                            row['Rota'] || row['rota'] || routeName,
+                            seq, 
+                            row['Shipment'] || row['shipment'] || '-', 
+                            row['Cidade'] || row['cidade'] || '-', 
+                            row['Bairro'] || row['bairro'] || '-', 
+                            row['Rua'] || row['rua'] || '-', 
+                            row['Numero'] || row['numero'] || row['Número'] || '-', 
+                            row['CEP'] || row['cep'] || '-', 
+                            row['Referências'] || row['Referencia'] || row['Referencias'] || '-'
+                        ];
+                    });
+
+                    colStyles = {
                         0: { cellWidth: 15 }, 
                         1: { cellWidth: 12, halign: 'center', fontStyle: 'bold' }, 
                         2: { cellWidth: 23 }, 
@@ -232,7 +271,71 @@
                         6: { cellWidth: 15 }, 
                         7: { cellWidth: 16 }, 
                         8: { cellWidth: 'auto' } 
-                    },
+                    };
+                } else {
+                    // LAYOUT 2: Intermediário (Estado, T.End, Ciclo, Dest.Fac.)
+                    tableColumns = [
+                        "Op.", "Rota", "Ordem", "Shipment", "Estado", "Cidade", 
+                        "Bairro", "CEP", "T. End.", "T. Cli.", "Ação", "Ciclo", "Dest. Fac.", "Pacote"
+                    ];
+
+                    tableRows = routeData.map((row, index) => {
+                        let seqRaw = row['Ordem'] || row['ordem'] || (index + 1).toString();
+                        let seq = /^\d+$/.test(seqRaw) ? `${seqRaw}A` : seqRaw;
+                        
+                        let tipoRaw = row['tipo_de_endereco'] || '';
+                        let tipoEnd = tipoRaw ? tipoRaw.charAt(0).toUpperCase() : '-';
+
+                        let tipoPacoteRaw = row['tipo_pacote'] || '-';
+                        let tipoPacote = tipoPacoteRaw === 'general_merchant' ? 'Normal' : tipoPacoteRaw;
+                        if (tipoPacote.toLowerCase() === 'bulky') {
+                            tipoPacote = 'Bulky'; 
+                        }
+
+                        return [
+                            row['Tipo_de_operacao'] || row['tipo_de_operacao'] || row['tipo de operacao'] || '-',
+                            row['Rota'] || row['rota'] || routeName,
+                            seq, 
+                            row['Shipment'] || row['shipment'] || '-', 
+                            row['Estado'] || row['estado'] || '-', 
+                            row['Cidade'] || row['cidade'] || '-', 
+                            row['Bairro'] || row['bairro'] || '-', 
+                            row['CEP'] || row['cep'] || '-', 
+                            tipoEnd,
+                            row['tipo_cliente'] || row['tipo cliente'] || '-', 
+                            row['tipo_de_acao'] || row['tipo de acao'] || '-',
+                            row['Ciclo'] || row['ciclo'] || '-',
+                            row['destination_facility'] || row['destination facility'] || row['facility_id'] || '-',
+                            tipoPacote
+                        ];
+                    });
+
+                    colStyles = {
+                        0: { cellWidth: 12 }, 
+                        1: { cellWidth: 15 }, 
+                        2: { cellWidth: 12, halign: 'center', fontStyle: 'bold' }, 
+                        3: { cellWidth: 23 }, 
+                        4: { cellWidth: 16 }, 
+                        5: { cellWidth: 22 }, 
+                        6: { cellWidth: 25 }, 
+                        7: { cellWidth: 16 }, 
+                        8: { cellWidth: 12, halign: 'center' }, 
+                        9: { cellWidth: 12, halign: 'center' }, 
+                        10: { cellWidth: 16 }, 
+                        11: { cellWidth: 12 }, 
+                        12: { cellWidth: 16 }, 
+                        13: { cellWidth: 'auto' } 
+                    };
+                }
+
+                doc.autoTable({
+                    head: [tableColumns],
+                    body: tableRows,
+                    startY: 32,
+                    theme: 'grid',
+                    styles: { fontSize: 7, cellPadding: 2, valign: 'middle', lineColor: [150, 150, 150], lineWidth: 0.1, overflow: 'linebreak' },
+                    headStyles: { fillColor: [240, 240, 240], textColor: [0, 0, 0], fontStyle: 'bold', halign: 'center' },
+                    columnStyles: colStyles,
                     didDrawPage: function (data) {
                         doc.setFontSize(8);
                         doc.setFont("helvetica", "normal");
@@ -252,7 +355,7 @@
                 else doc.save(`Rota_${routeName}.pdf`);
             };
 
-            const downloadMergedPDF = () => {
+            const downloadUnifiedForModal = (modalName) => {
                 setProcessing(true);
                 try {
                     const { jsPDF } = window.jspdf;
@@ -260,19 +363,43 @@
                     
                     let isFirst = true;
                     Object.entries(routes).forEach(([routeName, routeInfo]) => {
-                        addRouteToDoc(doc, routeName, routeInfo.data, !isFirst);
-                        isFirst = false;
+                        if (routeInfo.facility === modalName) {
+                            addRouteToDoc(doc, routeName, routeInfo.data, !isFirst);
+                            isFirst = false;
+                        }
                     });
                     
-                    doc.save("Todas_As_Rotas.pdf");
+                    doc.save(`Rotas_Unificadas_${modalName}.pdf`);
                 } catch (err) {
-                    setError("Erro ao gerar PDF unificado: " + err.message);
+                    setError(`Erro ao gerar PDF unificado para ${modalName}: ` + err.message);
                 } finally {
                     setProcessing(false);
                 }
             };
 
-            // Cria as pastas organizadas dentro do ZIP
+            // Nova função especial para descarregar BRNAL e BRDAL unificados
+            const downloadNEXUnified = () => {
+                setProcessing(true);
+                try {
+                    const { jsPDF } = window.jspdf;
+                    const doc = new jsPDF('l', 'mm', 'a4');
+                    
+                    let isFirst = true;
+                    Object.entries(routes).forEach(([routeName, routeInfo]) => {
+                        if (routeInfo.facility === 'BRNAL' || routeInfo.facility === 'BRDAL') {
+                            addRouteToDoc(doc, routeName, routeInfo.data, !isFirst);
+                            isFirst = false;
+                        }
+                    });
+                    
+                    doc.save(`Rotas_Unificadas_NEX_(BRNAL_e_BRDAL).pdf`);
+                } catch (err) {
+                    setError(`Erro ao gerar PDF unificado para NEX: ` + err.message);
+                } finally {
+                    setProcessing(false);
+                }
+            };
+
             const downloadAllAsZip = async () => {
                 setProcessing(true);
                 try {
@@ -280,11 +407,10 @@
                     
                     Object.entries(routes).forEach(([routeName, routeInfo]) => {
                         const pdfBlob = generatePDF(routeName, routeInfo.data, true);
-                        
-                        // Determina o nome da pasta com base no destination_facility ou operation type (EAL1, EAL2, SVC, etc)
-                        const folderName = routeInfo.facility || 'Outros';
-                        
-                        // Guarda o ficheiro PDF na sua respetiva pasta no ZIP
+                        // Se for BRNAL ou BRDAL, vai para a pasta NEX
+                        const folderName = (routeInfo.facility === 'BRNAL' || routeInfo.facility === 'BRDAL') 
+                                           ? 'NEX' 
+                                           : (routeInfo.facility || 'Outros');
                         zip.folder(folderName).file(`Rota_${routeName}.pdf`, pdfBlob);
                     });
                     
@@ -301,20 +427,40 @@
                 let allData = [];
                 Object.entries(routes).forEach(([routeName, routeInfo]) => {
                     routeInfo.data.forEach((row, index) => {
-                        let seqRaw = row['Ordem'] || (index + 1).toString();
+                        let seqRaw = row['stop_sequence'] || row['Ordem'] || row['ordem'] || (index + 1).toString();
                         let seq = /^\d+$/.test(seqRaw) ? `${seqRaw}A` : seqRaw;
 
+                        let tipoRaw = row['tipo_de_endereco'] || '';
+                        let tipoEnd = tipoRaw ? tipoRaw.charAt(0).toUpperCase() : '-';
+
+                        let tipoPacoteRaw = row['tipo_pacote'] || '-';
+                        let tipoPacote = tipoPacoteRaw === 'general_merchant' ? 'Normal' : tipoPacoteRaw;
+                        if (tipoPacote.toLowerCase() === 'bulky') {
+                            tipoPacote = 'Bulky'; 
+                        }
+
+                        // Junta todas as colunas possíveis na planilha de Excel
                         allData.push({
-                            "Pasta_Destino": routeInfo.facility,
+                            // Se for BRNAL ou BRDAL, identifica a pasta como NEX no Excel também
+                            "Pasta_Destino": (routeInfo.facility === 'BRNAL' || routeInfo.facility === 'BRDAL') ? 'NEX' : routeInfo.facility,
                             "Rota_PDF": routeName,
-                            "Rota": row['Rota'] || routeName,
+                            "Rota": row['route_name'] || row['Rota'] || row['rota'] || routeName,
                             "Ordem": seq,
-                            "Shipment": row['Shipment'] || '-',
-                            "Cidade": row['Cidade'] || '-',
-                            "Bairro": row['Bairro'] || '-',
-                            "Rua": row['Rua'] || '-',
-                            "Numero": row['Numero'] || '-',
-                            "CEP": row['CEP'] || '-',
+                            "Shipment": row['unit_id'] || row['Shipment'] || row['shipment'] || '-',
+                            "Estado": row['Estado'] || row['estado'] || '-',
+                            "Cidade": row['city'] || row['Cidade'] || row['cidade'] || '-',
+                            "Bairro": row['bairro'] || row['Bairro'] || '-',
+                            "Rua": row['Rua'] || row['rua'] || '-',
+                            "Numero": row['Numero'] || row['numero'] || row['Número'] || '-',
+                            "CEP": row['zip_code'] || row['CEP'] || row['cep'] || '-',
+                            "Veículo": row['Veiculo'] || row['veiculo'] || row['Veículo'] || '-',
+                            "SPR": row['spr'] || row['SPR'] || '-',
+                            "Código": row['Codigo'] || row['codigo'] || '-',
+                            "Operação": row['Tipo_de_operacao'] || row['tipo_de_operacao'] || '-',
+                            "T. End.": tipoEnd,
+                            "T. Cli.": row['tipo_cliente'] || row['tipo cliente'] || '-',
+                            "Ação": row['tipo_de_acao'] || row['tipo de acao'] || '-',
+                            "Pacote": tipoPacote,
                             "Referências": row['Referências'] || row['Referencia'] || row['Referencias'] || '-'
                         });
                     });
@@ -326,6 +472,12 @@
                 XLSX.writeFile(workbook, "Planeamento_Rotas.xlsx");
             };
 
+            const uniqueModals = [...new Set(Object.values(routes).map(r => r.facility))].filter(Boolean).sort();
+            
+            // Separamos os modais normais dos do NEX para criar a área agrupada no layout
+            const standardModals = uniqueModals.filter(m => m !== 'BRNAL' && m !== 'BRDAL');
+            const hasNEX = uniqueModals.includes('BRNAL') || uniqueModals.includes('BRDAL');
+
             return (
                 <div className="min-h-screen p-6 flex flex-col items-center">
                     <div className="w-full max-w-5xl bg-white rounded-xl shadow-lg p-8">
@@ -335,7 +487,6 @@
                             <h1 className="text-2xl font-bold text-gray-800">Criador de Rotas de Entrega</h1>
                         </div>
 
-                        {/* Área Inicial - Upload Manual */}
                         {!Object.keys(routes).length && (
                             <div 
                                 className={`border-2 border-dashed rounded-xl p-16 text-center transition-colors cursor-pointer flex flex-col justify-center items-center
@@ -368,15 +519,14 @@
                                         <p className="text-md text-gray-500 mb-6">ou clique para procurar no computador</p>
 
                                         <div className="text-xs text-left text-gray-500 bg-gray-100 p-4 rounded-md inline-block">
-                                            <p className="font-semibold mb-1">Colunas que serão impressas no PDF e na Planilha:</p>
-                                            <p>Rota, Ordem, Shipment, Cidade, Bairro, Rua, Numero, CEP, Referências</p>
+                                            <p className="font-semibold mb-1 text-gray-700">💡 Inteligência Automática</p>
+                                            <p>O sistema deteta sozinho os seus modelos de CSV e ajusta os PDFs e as separações (SAL1, EAL1, ECE1, NEX, etc.) sozinho.</p>
                                         </div>
                                     </>
                                 )}
                             </div>
                         )}
 
-                        {/* Mensagem de Erro */}
                         {error && (
                             <div className="mt-6 p-4 bg-red-50 text-red-600 rounded-lg flex items-start border border-red-100">
                                 <Icon name="alert-circle" className="w-5 h-5 mr-3 flex-shrink-0 mt-0.5" />
@@ -384,82 +534,128 @@
                             </div>
                         )}
 
-                        {/* Lista de Rotas Processadas */}
                         {Object.keys(routes).length > 0 && (
                             <div className="mt-8">
-                                <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
-                                    <div>
-                                        <h2 className="text-xl font-semibold text-gray-800">Rotas Identificadas</h2>
-                                        <p className="text-sm text-gray-500">
-                                            {Object.keys(routes).length} PDFs encontrados • {csvData.length} pacotes no total
-                                        </p>
+                                <div className="flex flex-col mb-6 gap-4">
+                                    <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                                        <div>
+                                            <h2 className="text-xl font-semibold text-gray-800">Rotas Identificadas</h2>
+                                            <p className="text-sm text-gray-500">
+                                                {Object.keys(routes).length} PDFs encontrados • {csvData.length} pacotes no total
+                                            </p>
+                                        </div>
+                                        <div className="flex flex-wrap gap-2">
+                                            <button 
+                                                onClick={() => { setRoutes({}); setFile(null); setCsvData([]); }}
+                                                className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition"
+                                                disabled={processing}
+                                            >
+                                                Novo Ficheiro
+                                            </button>
+                                            <button 
+                                                onClick={exportToExcel}
+                                                className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition flex items-center inline-flex"
+                                                disabled={processing}
+                                            >
+                                                <Icon name="table" className="w-4 h-4 mr-2" />
+                                                Exportar Planilha
+                                            </button>
+                                            <button 
+                                                onClick={downloadAllAsZip}
+                                                className={`px-4 py-2 text-white rounded-lg transition flex items-center inline-flex ${processing ? 'bg-blue-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'}`}
+                                                disabled={processing}
+                                            >
+                                                {processing ? (
+                                                    <><Icon name="loader-2" className="w-4 h-4 mr-2 animate-spin" /> A compactar ZIP...</>
+                                                ) : (
+                                                    <><Icon name="archive" className="w-4 h-4 mr-2" /> Transferir Todos (ZIP)</>
+                                                )}
+                                            </button>
+                                        </div>
                                     </div>
-                                    <div className="flex flex-wrap gap-2">
-                                        <button 
-                                            onClick={() => { setRoutes({}); setFile(null); setCsvData([]); }}
-                                            className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition"
-                                            disabled={processing}
-                                        >
-                                            Novo Ficheiro
-                                        </button>
-                                        <button 
-                                            onClick={exportToExcel}
-                                            className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition flex items-center inline-flex"
-                                            disabled={processing}
-                                        >
-                                            <Icon name="table" className="w-4 h-4 mr-2" />
-                                            Exportar Planilha
-                                        </button>
-                                        <button 
-                                            onClick={downloadMergedPDF}
-                                            className={`px-4 py-2 text-white rounded-lg transition flex items-center inline-flex ${processing ? 'bg-indigo-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700'}`}
-                                            disabled={processing}
-                                        >
-                                            {processing ? (
-                                                <><Icon name="loader-2" className="w-4 h-4 mr-2 animate-spin" /> A gerar...</>
-                                            ) : (
-                                                <><Icon name="file-text" className="w-4 h-4 mr-2" /> PDF Único</>
-                                            )}
-                                        </button>
-                                        <button 
-                                            onClick={downloadAllAsZip}
-                                            className={`px-4 py-2 text-white rounded-lg transition flex items-center inline-flex ${processing ? 'bg-blue-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'}`}
-                                            disabled={processing}
-                                        >
-                                            {processing ? (
-                                                <><Icon name="loader-2" className="w-4 h-4 mr-2 animate-spin" /> A compactar ZIP...</>
-                                            ) : (
-                                                <><Icon name="archive" className="w-4 h-4 mr-2" /> Baixar ZIP</>
-                                            )}
-                                        </button>
-                                    </div>
+
+                                    {uniqueModals.length > 0 && (
+                                        <div className="flex items-center flex-wrap gap-3 bg-indigo-50 p-3 rounded-lg border border-indigo-200">
+                                            <span className="text-sm font-semibold text-indigo-800 flex items-center">
+                                                <Icon name="file-text" className="w-4 h-4 mr-1" />
+                                                Baixar PDFs Unificados:
+                                            </span>
+                                            
+                                            <div className="flex flex-wrap gap-2 items-center">
+                                                {standardModals.map(modal => (
+                                                    <button
+                                                        key={modal}
+                                                        onClick={() => downloadUnifiedForModal(modal)}
+                                                        className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-medium rounded shadow-sm transition flex items-center"
+                                                        disabled={processing}
+                                                        title={`Baixar todas as rotas de ${modal} num único arquivo`}
+                                                    >
+                                                        <Icon name="download" className="w-3 h-3 mr-1" />
+                                                        {modal}
+                                                    </button>
+                                                ))}
+                                                
+                                                {/* BLOCO NEX - Agrupa BRNAL e BRDAL no Layout */}
+                                                {hasNEX && (
+                                                    <div className="flex bg-indigo-200/60 p-1.5 rounded-md gap-2 border border-indigo-300 ml-1 items-center">
+                                                        <span className="text-xs font-bold text-indigo-900 px-1">NEX:</span>
+                                                        
+                                                        {uniqueModals.includes('BRNAL') && (
+                                                            <button onClick={() => downloadUnifiedForModal('BRNAL')} className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-medium rounded shadow-sm transition flex items-center">
+                                                                <Icon name="download" className="w-3 h-3 mr-1" /> BRNAL
+                                                            </button>
+                                                        )}
+                                                        {uniqueModals.includes('BRDAL') && (
+                                                            <button onClick={() => downloadUnifiedForModal('BRDAL')} className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-medium rounded shadow-sm transition flex items-center">
+                                                                <Icon name="download" className="w-3 h-3 mr-1" /> BRDAL
+                                                            </button>
+                                                        )}
+                                                        <button 
+                                                            onClick={downloadNEXUnified} 
+                                                            className="px-3 py-1.5 bg-purple-700 hover:bg-purple-800 text-white text-xs font-medium rounded shadow-sm transition flex items-center" 
+                                                            title="Baixar BRNAL e BRDAL unificados no mesmo PDF"
+                                                        >
+                                                            <Icon name="download" className="w-3 h-3 mr-1" /> AMBOS JUNTOS
+                                                        </button>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
 
                                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                                    {Object.entries(routes).map(([routeName, routeInfo]) => (
-                                        <div key={routeName} className="border border-gray-200 rounded-lg p-4 flex justify-between items-center hover:shadow-sm transition bg-gray-50">
-                                            <div className="flex items-start space-x-3 overflow-hidden">
-                                                <div className="bg-white p-2 rounded-lg border border-gray-200 shadow-sm mt-1">
-                                                    <Icon name="folder" className="w-5 h-5 text-yellow-500" />
+                                    {Object.entries(routes).map(([routeName, routeInfo]) => {
+                                        // Visualmente, mostramos a verdadeira pasta (NEX) onde vão parar
+                                        const zipFolderName = (routeInfo.facility === 'BRNAL' || routeInfo.facility === 'BRDAL') ? 'NEX' : routeInfo.facility;
+                                        
+                                        return (
+                                            <div key={routeName} className="border border-gray-200 rounded-lg p-4 flex justify-between items-center hover:shadow-sm transition bg-gray-50">
+                                                <div className="flex items-start space-x-3 overflow-hidden">
+                                                    <div className="bg-white p-2 rounded-lg border border-gray-200 shadow-sm mt-1">
+                                                        <Icon name="folder" className="w-5 h-5 text-yellow-500" />
+                                                    </div>
+                                                    <div className="min-w-0">
+                                                        <h3 className="font-semibold text-gray-800 text-md truncate" title={routeName}>{routeName}</h3>
+                                                        <p className="text-xs text-gray-500 mb-1">
+                                                            Pasta ZIP: <span className="font-medium text-gray-700">{zipFolderName}</span>
+                                                        </p>
+                                                        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">
+                                                            {routeInfo.data.length} pacotes
+                                                        </span>
+                                                    </div>
                                                 </div>
-                                                <div className="min-w-0">
-                                                    <h3 className="font-semibold text-gray-800 text-md truncate" title={routeName}>{routeName}</h3>
-                                                    <p className="text-xs text-gray-500 mb-1">Pasta ZIP: <span className="font-medium text-gray-700">{routeInfo.facility}</span></p>
-                                                    <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">
-                                                        {routeInfo.data.length} pacotes
-                                                    </span>
-                                                </div>
+                                                <button 
+                                                    onClick={() => generatePDF(routeName, routeInfo.data)}
+                                                    className="p-2 ml-2 text-blue-600 hover:bg-blue-100 rounded-md transition flex-shrink-0 bg-white border border-transparent hover:border-blue-200"
+                                                    title="Transferir apenas este PDF"
+                                                    disabled={processing}
+                                                >
+                                                    <Icon name="file-down" className="w-5 h-5" />
+                                                </button>
                                             </div>
-                                            <button 
-                                                onClick={() => generatePDF(routeName, routeInfo.data)}
-                                                className="p-2 ml-2 text-blue-600 hover:bg-blue-100 rounded-md transition flex-shrink-0 bg-white border border-transparent hover:border-blue-200"
-                                                title="Transferir apenas este PDF"
-                                                disabled={processing}
-                                            >
-                                                <Icon name="file-down" className="w-5 h-5" />
-                                            </button>
-                                        </div>
-                                    ))}
+                                        );
+                                    })}
                                 </div>
                             </div>
                         )}
